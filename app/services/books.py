@@ -2,11 +2,23 @@
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Book
 from app.schemas import BookCreate, BookPage, BookSort, BookUpdate
+
+_SORT_COLUMNS = {
+    "title": Book.title,
+    "price": Book.price_cents,
+}
+
+
+def _isbn_taken(db: Session, isbn: str, exclude_book_id: Optional[int] = None) -> bool:
+    query = select(Book.id).where(Book.isbn == isbn)
+    if exclude_book_id is not None:
+        query = query.where(Book.id != exclude_book_id)
+    return db.scalar(query) is not None
 
 
 def create_book(db: Session, data: BookCreate) -> Book:
@@ -14,7 +26,8 @@ def create_book(db: Session, data: BookCreate) -> Book:
 
     Rules: the (already normalized) ISBN must be unique -> 409 otherwise.
     """
-    # TODO: reject a duplicate ISBN with 409
+    if _isbn_taken(db, data.isbn):
+        raise HTTPException(status_code=409, detail="isbn already exists")
     book = Book(**data.model_dump())
     db.add(book)
     db.commit()
@@ -31,8 +44,18 @@ def get_book(db: Session, book_id: int) -> Book:
 
 
 def update_book(db: Session, book_id: int, data: BookUpdate) -> Book:
-    """Apply a partial update. Only fields present in the request are changed; 404 if missing."""
-    raise NotImplementedError("update_book")
+    """Apply a partial update. Only fields present in the request are changed; 404 if missing.
+
+    ``isbn`` and unknown fields are silently ignored (``BookUpdate`` has no ``isbn`` field, so
+    they're already dropped by the schema). Validation happens before any field is mutated, so a
+    422 never leaves the book partially updated.
+    """
+    book = get_book(db, book_id)
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(book, field, value)
+    db.commit()
+    db.refresh(book)
+    return book
 
 
 def list_books(
@@ -56,13 +79,23 @@ def list_books(
     """
     query = select(Book)
     if q:
-        query = query.where(Book.title.icontains(q, autoescape=True))
+        query = query.where(or_(Book.title.icontains(q, autoescape=True), Book.author.icontains(q, autoescape=True)))
     if restricted is not None:
         query = query.where(Book.restricted == restricted)
-    # TODO:  min_price / max_price filters
+    if min_price is not None:
+        query = query.where(Book.price_cents >= min_price)
+    if max_price is not None:
+        query = query.where(Book.price_cents <= max_price)
 
-    # TODO: apply ``sort``
-    books = db.scalars(query.order_by(Book.id.asc()).limit(limit).offset(offset)).all()
-    total = len(books)
+    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+
+    if sort is None:
+        order_by = (Book.id.asc(),)
+    else:
+        descending = sort.startswith("-")
+        column = _SORT_COLUMNS[sort[1:] if descending else sort]
+        order_by = (column.desc() if descending else column.asc(), Book.id.asc())
+
+    books = db.scalars(query.order_by(*order_by).limit(limit).offset(offset)).all()
 
     return BookPage(items=books, total=total, limit=limit, offset=offset)
