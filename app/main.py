@@ -1,4 +1,5 @@
 """Application factory for the Sanctum Sanctorum Bookstore API."""
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -16,10 +17,13 @@ from app.seed import seed_if_empty
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
+logger = logging.getLogger("uvicorn.error")
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     """Create tables on the default engine and load demo data into an empty database."""
+    logger.info("Using %s database", engine.dialect.name)
     Base.metadata.create_all(engine)
     with SessionLocal() as db:
         seed_if_empty(db, get_now())
