@@ -14,6 +14,8 @@ _SORT_COLUMNS = {
     "price": Book.price_cents,
 }
 
+DUPLICATE_ISBN = "isbn already exists"
+
 
 def create_book(db: Session, data: BookCreate) -> Book:
     """Add a book to the catalogue.
@@ -22,21 +24,21 @@ def create_book(db: Session, data: BookCreate) -> Book:
     clear error in the common case; the unique constraint catches a concurrent duplicate insert.
     """
     if db.scalar(select(Book.id).where(Book.isbn == data.isbn)) is not None:
-        raise HTTPException(status_code=409, detail="isbn already exists")
+        raise HTTPException(status_code=409, detail=DUPLICATE_ISBN)
     book = Book(**data.model_dump())
     db.add(book)
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=409, detail="isbn already exists")
+        raise HTTPException(status_code=409, detail=DUPLICATE_ISBN)
     db.refresh(book)
     return book
 
 
-def get_book(db: Session, book_id: int) -> Book:
-    """Return a book by id, or raise 404."""
-    book = db.get(Book, book_id)
+def get_book(db: Session, book_id: int, lock: bool = False) -> Book:
+    """Return a book by id, or raise 404. ``lock`` takes a row lock (``FOR UPDATE``)."""
+    book = db.get(Book, book_id, with_for_update=lock)
     if book is None:
         raise HTTPException(status_code=404, detail="Book not found")
     return book
@@ -78,7 +80,9 @@ def list_books(
     """
     query = select(Book)
     if q:
-        query = query.where(or_(Book.title.icontains(q, autoescape=True), Book.author.icontains(q, autoescape=True)))
+        query = query.where(
+            or_(Book.title.icontains(q, autoescape=True), Book.author.icontains(q, autoescape=True))
+        )
     if restricted is not None:
         query = query.where(Book.restricted == restricted)
     if min_price is not None:
@@ -86,7 +90,7 @@ def list_books(
     if max_price is not None:
         query = query.where(Book.price_cents <= max_price)
 
-    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    total = db.scalar(select(func.count()).select_from(query.subquery()))
 
     if sort is None:
         order_by = (Book.id.asc(),)

@@ -35,20 +35,25 @@ def ensure_can_access_restricted(member: Member) -> None:
         )
 
 
+DUPLICATE_EMAIL = "email already in use"
+
+
 def create_member(db: Session, data: MemberCreate, now: datetime) -> Member:
     """Register a member.
 
     Rules: email (already stripped + lowercased) must be unique -> 409; created_at = now.
+    The unique index on email is the only constraint an insert can violate, so an
+    ``IntegrityError`` here means a concurrent registration with the same email.
     """
     if db.scalar(select(Member.id).where(Member.email == data.email)) is not None:
-        raise HTTPException(status_code=409, detail="email already in use")
+        raise HTTPException(status_code=409, detail=DUPLICATE_EMAIL)
     member = Member(name=data.name, email=data.email, tier=data.tier.value, created_at=now)
     db.add(member)
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=409, detail="email already in use")
+        raise HTTPException(status_code=409, detail=DUPLICATE_EMAIL)
     db.refresh(member)
     return member
 
