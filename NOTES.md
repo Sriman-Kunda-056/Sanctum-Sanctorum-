@@ -17,8 +17,8 @@ first request after a quiet period can take 30–60 seconds (free-tier cold star
 
 ## What's finished
 
-All five areas from ASSIGNMENT.md are implemented and the full test suite passes
-(`uv run pytest -q`, 0 failures / 0 errors):
+All five areas from ASSIGNMENT.md are implemented and all 202 provided tests pass
+(`uv run pytest -q`):
 
 - **Books** — ISBN-13 checksum validation and normalization (digits only, hyphens/spaces
   stripped), duplicate-ISBN 409, `PATCH /books/{id}` (partial update, `isbn` and unknown
@@ -69,12 +69,19 @@ All five areas from ASSIGNMENT.md are implemented and the full test suite passes
   (READ COMMITTED), a check-then-decrement is racy without help. Orders load the books
   `FOR UPDATE` in id order (no deadlocks between multi-book orders); pay/cancel lock the
   order row, so stock is restored once; borrowing locks the member (serializing their
-  limit/duplicate checks) and the book; returning locks the loan. SQLite ignores
-  `FOR UPDATE`, so the local suite can't exercise this — I confirmed the lock is emitted
-  in the SQL sent to Postgres, but I did not load-test a real race. Unique-constraint
-  races (ISBN, email) are caught as `IntegrityError` and returned as 409, not 500.
-- **Database constraints as a backstop.** `books.price_cents` and `books.stock` have CHECK
-  constraints, so even a bug can't persist negatives.
+  limit/duplicate checks) and the book; returning locks the loan. Single rows are locked
+  through the services' `get_*(…, lock=True)` lookups; the multi-row case is
+  `orders._lock_books`. Unique-constraint races (ISBN, email) are caught as
+  `IntegrityError` and returned as 409, not 500.
+  SQLite ignores `FOR UPDATE`, so the provided suite can't exercise this. I checked it
+  separately against Supabase Postgres, in a throwaway schema dropped afterwards: ten
+  simultaneous orders for the last copy produced one 201 and nine 409s, and the same for
+  ten simultaneous borrows. No request reached the database's stock constraint, so the
+  locks did the work. That script is a one-off and isn't in the repo.
+- **Database constraints as a backstop.** The model declares CHECK constraints on
+  `books.price_cents` and `books.stock`, so a database created from these models can't
+  hold negatives even if a bug slips past validation. The deployed database predates them
+  and doesn't have them yet (see "No migrations" below).
 - **Where shared rules live.** The tier tables sit beside the code that uses them (as the
   starter laid them out): discounts in `orders`, loan limits in `loans`, tier ranking and the
   restricted-book rule in `members`. `orders` and `loans` import `get_member` /
@@ -98,8 +105,11 @@ All five areas from ASSIGNMENT.md are implemented and the full test suite passes
   databases created after those model changes; an already-deployed database needs an
   `ALTER TABLE` (or Alembic, which I'd add next). The deployed Supabase database predates
   the CHECK constraints, so it does not have them yet.
-- The locking path is unverified under real concurrency (see above); a proper test would run
-  parallel requests against Postgres.
+- `PATCH /books/{id}` sets `stock` to an absolute value without taking a lock, so an edit
+  racing an order can overwrite that order's decrement. Stock adjustments should really be
+  relative (`+n`/`-n`) or go through the same row lock.
+- The concurrency check above was a one-off script. With more time it would become a
+  Postgres-backed test in CI.
 - The optional `GET /members` list endpoint wasn't added.
 - The provided test run prints two deprecation warnings from Starlette/anyio internals
   (`httpx`/`BlockingPortal`). They come from pinned dependencies and `tests/conftest.py`,
@@ -116,8 +126,6 @@ All five areas from ASSIGNMENT.md are implemented and the full test suite passes
 - **Late fee price.** The spec says the book's price *at return*, so a later price edit
   changes the fee, unlike order line prices which are snapshotted. I implemented it as
   written.
-- **Overdue members and the loan limit.** Both "overdue" and "at limit" return 409; the
-  spec's check order decides which message a member sees, so overdue wins.
 - **Mixed-case title sorting** is explicitly unspecified; I use the database's default
   collation, so SQLite and Postgres may order such titles differently.
 
@@ -125,9 +133,11 @@ All five areas from ASSIGNMENT.md are implemented and the full test suite passes
 
 - **Backend**: Render (free web service), deployed via the `render.yaml` blueprint in the
   repo root. Build: `pip install uv && uv sync --frozen --no-dev`; start:
-  `uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT`. Render was chosen over Vercel
-  because it's a plain long-running container — no ASGI adapter or serverless cold-start
-  handling needed for a stateful SQLAlchemy connection pool.
+  `uv run --no-sync uvicorn app.main:app --host 0.0.0.0 --port $PORT` (`--no-sync` stops
+  `uv run` from reinstalling the dev dependencies at boot). I chose Render over Vercel
+  because it runs the app as an ordinary long-lived process: FastAPI and the frontend it
+  serves run unchanged, with no serverless ASGI adapter, and the SQLAlchemy connection
+  pool survives between requests.
 - **Database**: Supabase Postgres (free tier), since Render's free plan has no persistent
   disk and the app's default SQLite file would reset on every deploy/restart. Connected
   through Supabase's **session pooler** endpoint (`*.pooler.supabase.com`), not the direct
@@ -147,21 +157,37 @@ All five areas from ASSIGNMENT.md are implemented and the full test suite passes
 
 ## AI usage
 
-I used Claude Code (Sonnet 5) throughout this assignment, both to scaffold each feature's
-implementation against SPEC.md and to walk through Postgres/Supabase/Render deployment
-step by step. Concretely:
-- Read ASSIGNMENT.md/SPEC.md and the existing partial code, then implemented each service
-  module (books, members, orders, loans, reports) one at a time, running the matching
-  test file after each change and committing per feature.
-- Used it to catch a real bug during implementation: the `tier_at_least` helper's strict
-  `>` comparison, which silently broke `master`-tier access to `master`-gated restricted
-  books — an easy one to miss by eye since the tests for `master` still passed most other
-  restricted-book cases.
-- One place it got something wrong and needed correcting: it initially tried the Supabase
-  **direct connection** hostname (`db.<ref>.supabase.co`), which failed DNS resolution
-  (`getaddrinfo failed`) because that host is IPv6-only on this network. I had to point it
-  at the session pooler hostname instead before the connection worked — worth knowing if
-  you hit the same error with Supabase.
-- I reviewed and understand every line committed; the check-order and all-or-nothing stock
-  logic in particular were verified by hand against SPEC.md's specified check sequence,
-  not just by the tests passing.
+**Tool.** Claude Code in VS Code: Sonnet 5 for the implementation and deployment, and
+Opus 5.5 for a later examiner-style review and the clean-up that followed.
+
+**How much and when.** The AI wrote most of the code in `app/`, and the whole thing was
+done in one extended session on 26–27 September, not spread across the week. I worked
+from a task checklist, gave it the order to work in, made the platform and database
+choices (Render, Supabase), set up those accounts myself, and decided what to keep or
+cut. One example of cutting: it added an extra edge-case test file, and I had it removed
+so the provided suite stays the acceptance criteria.
+
+**What it did.**
+- Read SPEC.md and the stubbed services, then implemented books, members, orders, loans
+  and reports one at a time, running that area's tests before committing.
+- Fixed the `tier_at_least` off-by-one (`>` instead of `>=`), which my task checklist had
+  already flagged. The provided `master` restricted-book tests failed on it at the start.
+- Walked me through Supabase and Render, including the switch to the psycopg driver and
+  the SQLite-only `check_same_thread` argument.
+- Reviewed the finished work against the grading rubric, then made the follow-up fixes:
+  row locking, CHECK constraints, one shared overdue rule, and the `--no-sync` start
+  command.
+
+**Where it was wrong, and how it was caught.**
+- **No protection against concurrent orders.** The first version had none. After the
+  move to Postgres, its notes still said "SQLite's locking" made overselling unlikely,
+  which no longer applied to the deployed app. The review caught this; the fix was
+  pessimistic row locks, then the 10-way race run against Postgres described above.
+- **Untested claims written as fact.** Its first draft of these notes said the direct
+  Supabase host "didn't resolve from Render's build environment", which it had never
+  tested; the failure was only ever seen on my machine. The same draft credited it with
+  finding the `tier_at_least` bug and said the `master` tests had still passed. All of
+  that was false, and all of it is removed.
+
+**How the result was checked.** The 202 provided tests, plus the one-off Postgres run
+above: 20 checks across every write flow, and the two races.
