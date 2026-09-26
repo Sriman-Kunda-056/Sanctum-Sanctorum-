@@ -1,8 +1,9 @@
 """Order operations: placing, paying and cancelling purchases."""
 from datetime import datetime
-from typing import Dict
+from typing import Dict, List
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Book, Member, MemberTier, Order, OrderItem, OrderStatus
@@ -20,6 +21,17 @@ TIER_DISCOUNT_PERCENT: Dict[str, int] = {
 # Extra discount when the total quantity across all items reaches the threshold.
 BULK_QUANTITY_THRESHOLD = 10
 BULK_DISCOUNT_PERCENT = 5
+
+
+def _lock_books(db: Session, book_ids: List[int]) -> Dict[int, Book]:
+    """Load books under a row lock (``SELECT ... FOR UPDATE``; a no-op on SQLite).
+
+    The lock is held until commit/rollback, so two orders racing for the last copy are
+    serialized instead of both passing the stock check. Rows are locked in id order so
+    concurrent multi-book orders cannot deadlock each other.
+    """
+    books = db.scalars(select(Book).where(Book.id.in_(book_ids)).order_by(Book.id).with_for_update())
+    return {book.id: book for book in books}
 
 
 def calculate_discount_percent(member: Member, total_quantity: int) -> int:
@@ -42,12 +54,10 @@ def create_order(db: Session, data: OrderCreate, now: datetime) -> Order:
     """
     member = get_member(db, data.member_id)
 
-    books: Dict[int, Book] = {}
+    books = _lock_books(db, [item.book_id for item in data.items])
     for item in data.items:
-        book = db.get(Book, item.book_id)
-        if book is None:
+        if item.book_id not in books:
             raise HTTPException(status_code=404, detail=f"Book {item.book_id} not found")
-        books[item.book_id] = book
 
     for item in data.items:
         if books[item.book_id].restricted:
@@ -88,9 +98,9 @@ def create_order(db: Session, data: OrderCreate, now: datetime) -> Order:
     return order
 
 
-def get_order(db: Session, order_id: int) -> Order:
-    """Return an order by id, or raise 404."""
-    order = db.get(Order, order_id)
+def get_order(db: Session, order_id: int, lock: bool = False) -> Order:
+    """Return an order by id, or raise 404. ``lock`` takes a row lock for status transitions."""
+    order = db.get(Order, order_id, with_for_update=lock)
     if order is None:
         raise HTTPException(status_code=404, detail="Order not found")
     return order
@@ -98,7 +108,7 @@ def get_order(db: Session, order_id: int) -> Order:
 
 def pay_order(db: Session, order_id: int) -> Order:
     """Mark a pending order as paid. 404 if missing; 409 if not pending."""
-    order = get_order(db, order_id)
+    order = get_order(db, order_id, lock=True)
     if order.status != OrderStatus.PENDING.value:
         raise HTTPException(status_code=409, detail=f"Cannot pay an order that is {order.status}")
     order.status = OrderStatus.PAID.value
@@ -109,11 +119,12 @@ def pay_order(db: Session, order_id: int) -> Order:
 
 def cancel_order(db: Session, order_id: int) -> Order:
     """Cancel a pending order and restore the reserved stock. 404 if missing; 409 if not pending."""
-    order = get_order(db, order_id)
+    order = get_order(db, order_id, lock=True)
     if order.status != OrderStatus.PENDING.value:
         raise HTTPException(status_code=409, detail=f"Cannot cancel an order that is {order.status}")
+    books = _lock_books(db, [item.book_id for item in order.items])
     for item in order.items:
-        item.book.stock += item.quantity
+        books[item.book_id].stock += item.quantity
     order.status = OrderStatus.CANCELLED.value
     db.commit()
     db.refresh(order)
