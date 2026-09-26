@@ -40,9 +40,6 @@ All five areas from ASSIGNMENT.md are implemented and the full test suite passes
   groups by book, and sorts by copies sold descending with a title-ascending tie-break.
   The inner join naturally excludes books with zero paid sales, so no extra filtering
   is needed.
-- **Extra tests** — `tests/test_edge_cases.py` (a new file; the provided tests are
-  unmodified) covers normalization, atomic-failure and boundary cases the given suite
-  doesn't.
 
 ## Architectural decisions
 
