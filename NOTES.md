@@ -1,9 +1,19 @@
 # Notes
 
 **Live URL:** https://sanctum-sanctorum-ugtq.onrender.com/ — UI at `/`, API at the root
-(e.g. `/books`, `/reports/top-books`), Swagger docs at `/docs`. No login required; seeded
-members (ids 1–4, tiers supreme/master/adept/apprentice) and 12 seeded books are already
-in the database.
+(e.g. `/books`, `/reports/top-books`), Swagger docs at `/docs`. No password: the UI "signs
+in" by member id. The database already holds 12 seeded books and these four members:
+
+| Member id | Name | Email | Tier |
+|---|---|---|---|
+| 1 | Wong Li | wong@example.com | supreme |
+| 2 | Christine Palmer | christine@example.com | master |
+| 3 | Jonathan Pangborn | jonathan@example.com | adept |
+| 4 | Sara Lin | sara@example.com | apprentice |
+
+Tiers matter for testing: only `master` and `supreme` can buy or borrow restricted books
+(e.g. *Darkhold*), and the loan limit is 1 / 3 / 5 / unlimited from apprentice up. The
+first request after a quiet period can take 30–60 seconds (free-tier cold start).
 
 ## What's finished
 
