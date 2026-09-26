@@ -4,16 +4,25 @@
 (e.g. `/books`, `/reports/top-books`), Swagger docs at `/docs`. No password: the UI "signs
 in" by member id. The database already holds 12 seeded books and these four members:
 
-| Member id | Name | Email | Tier |
-|---|---|---|---|
-| 1 | Wong Li | wong@example.com | supreme |
-| 2 | Christine Palmer | christine@example.com | master |
-| 3 | Jonathan Pangborn | jonathan@example.com | adept |
-| 4 | Sara Lin | sara@example.com | apprentice |
+| Member id | Name | Email | Tier | Good for testing |
+|---|---|---|---|---|
+| 1 | Wong Li | wong@example.com | supreme | Restricted books allowed, 15% discount, unlimited loans |
+| 2 | Christine Palmer | christine@example.com | master | Restricted books allowed, 10% discount, up to 5 loans |
+| 3 | Jonathan Pangborn | jonathan@example.com | adept | Restricted books blocked (403), 5% discount, up to 3 loans |
+| 4 | Sara Lin | sara@example.com | apprentice | Restricted books blocked, no discount, 1 loan (a second borrow is 409) |
 
-Tiers matter for testing: only `master` and `supreme` can buy or borrow restricted books
-(e.g. *Darkhold*), and the loan limit is 1 / 3 / 5 / unlimited from apprentice up. The
-first request after a quiet period can take 30–60 seconds (free-tier cold start).
+Useful books (ids and stock as seeded; stock changes as people order and borrow):
+- **Restricted:** book 3, *Darkhold* (stock 1), and book 11, *Principles of Celestial
+  Mechanics* (stock 3). These show the difference between members 1–2 and 3–4.
+- **Out of stock:** *Darkhold* has one copy, so a second order or loan of it returns 409.
+- **Bulk discount:** book 5, *Meditations on First Principles* (stock 12). Ordering 10 or
+  more copies adds 5% on top of the tier discount.
+
+A quick run-through in the UI: sign in as member 4 and borrow a book, then try a second
+one (refused: apprentice limit). Sign in as member 2, order *Darkhold*, pay for it, and
+check the top-books report.
+
+The first request after a quiet period can take 30–60 seconds (free-tier cold start).
 
 ## What's finished
 
