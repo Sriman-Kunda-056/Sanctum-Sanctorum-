@@ -1,5 +1,4 @@
 """Library loan operations: borrowing and returning books."""
-import math
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
@@ -27,9 +26,7 @@ def loan_status(loan: Loan, now: datetime) -> LoanStatus:
     """``returned`` if returned; else ``overdue`` if now > due_at; else ``active``."""
     if loan.returned_at is not None:
         return "returned"
-    if now > loan.due_at:
-        return "overdue"
-    return "active"
+    return "overdue" if loan.is_overdue(now) else "active"
 
 
 def to_loan_out(loan: Loan, now: datetime) -> LoanOut:
@@ -50,7 +47,7 @@ def calculate_late_fee(due_at: datetime, returned_at: datetime, price_cents: int
     """25 cents per started day late (any partial day counts), capped at the book's price; 0 if not late."""
     if returned_at <= due_at:
         return 0
-    days_late = math.ceil((returned_at - due_at).total_seconds() / timedelta(days=1).total_seconds())
+    days_late = -(-(returned_at - due_at) // timedelta(days=1))
     return min(days_late * LATE_FEE_PER_DAY_CENTS, price_cents)
 
 
@@ -75,10 +72,11 @@ def create_loan(db: Session, data: LoanCreate, now: datetime) -> LoanOut:
     if book.restricted:
         ensure_can_access_restricted(member)
 
-    existing_loans = list(db.scalars(select(Loan).where(Loan.member_id == member.id)))
-    unreturned = [loan for loan in existing_loans if loan.returned_at is None]
+    unreturned = list(
+        db.scalars(select(Loan).where(Loan.member_id == member.id, Loan.returned_at.is_(None)))
+    )
 
-    if any(now > loan.due_at for loan in unreturned):
+    if any(loan.is_overdue(now) for loan in unreturned):
         raise HTTPException(status_code=409, detail="Member has an overdue loan")
     if any(loan.book_id == book.id for loan in unreturned):
         raise HTTPException(status_code=409, detail="Member already has an unreturned loan of this book")

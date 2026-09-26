@@ -83,7 +83,7 @@ def get_member_stats(db: Session, member_id: int, now: datetime) -> MemberStats:
 
     loans = list(db.scalars(select(Loan).where(Loan.member_id == member_id)))
     active_loans = sum(1 for loan in loans if loan.returned_at is None)
-    overdue_loans = sum(1 for loan in loans if loan.returned_at is None and now > loan.due_at)
+    overdue_loans = sum(1 for loan in loans if loan.is_overdue(now))
     late_fees_cents = sum(loan.late_fee_cents for loan in loans if loan.returned_at is not None)
 
     return MemberStats(

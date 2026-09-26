@@ -101,3 +101,7 @@ class Loan(Base):
 
     member: Mapped[Member] = relationship(back_populates="loans")
     book: Mapped[Book] = relationship()
+
+    def is_overdue(self, now: datetime) -> bool:
+        """Unreturned and strictly past due; at exactly ``due_at`` a loan is still on time."""
+        return self.returned_at is None and now > self.due_at
