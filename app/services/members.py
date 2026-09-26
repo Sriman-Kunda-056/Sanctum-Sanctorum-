@@ -4,6 +4,7 @@ from typing import List
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import Loan, Member, MemberTier, Order, OrderStatus
@@ -39,12 +40,15 @@ def create_member(db: Session, data: MemberCreate, now: datetime) -> Member:
 
     Rules: email (already stripped + lowercased) must be unique -> 409; created_at = now.
     """
-    exists = db.scalar(select(Member.id).where(func.lower(Member.email) == data.email.lower()))
-    if exists is not None:
+    if db.scalar(select(Member.id).where(Member.email == data.email)) is not None:
         raise HTTPException(status_code=409, detail="email already in use")
     member = Member(name=data.name, email=data.email, tier=data.tier.value, created_at=now)
     db.add(member)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="email already in use")
     db.refresh(member)
     return member
 
