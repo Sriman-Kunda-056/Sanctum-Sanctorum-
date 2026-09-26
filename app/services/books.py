@@ -3,6 +3,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import Book
@@ -14,23 +15,21 @@ _SORT_COLUMNS = {
 }
 
 
-def _isbn_taken(db: Session, isbn: str, exclude_book_id: Optional[int] = None) -> bool:
-    query = select(Book.id).where(Book.isbn == isbn)
-    if exclude_book_id is not None:
-        query = query.where(Book.id != exclude_book_id)
-    return db.scalar(query) is not None
-
-
 def create_book(db: Session, data: BookCreate) -> Book:
     """Add a book to the catalogue.
 
-    Rules: the (already normalized) ISBN must be unique -> 409 otherwise.
+    Rules: the (already normalized) ISBN must be unique -> 409 otherwise. The pre-check gives a
+    clear error in the common case; the unique constraint catches a concurrent duplicate insert.
     """
-    if _isbn_taken(db, data.isbn):
+    if db.scalar(select(Book.id).where(Book.isbn == data.isbn)) is not None:
         raise HTTPException(status_code=409, detail="isbn already exists")
     book = Book(**data.model_dump())
     db.add(book)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="isbn already exists")
     db.refresh(book)
     return book
 
