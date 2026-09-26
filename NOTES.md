@@ -1,6 +1,9 @@
 # Notes
 
-**Live URL:** TODO — not deployed yet.
+**Live URL:** https://sanctum-sanctorum-ugtq.onrender.com/ — UI at `/`, API at the root
+(e.g. `/books`, `/reports/top-books`), Swagger docs at `/docs`. No login required; seeded
+members (ids 1–4, tiers supreme/master/adept/apprentice) and 12 seeded books are already
+in the database.
 
 ## What's finished
 
@@ -78,8 +81,42 @@ All five areas from ASSIGNMENT.md are implemented and the full test suite passes
 
 ## Deployment / database decisions
 
-TODO — filling in once deployed.
+- **Backend**: Render (free web service), deployed via the `render.yaml` blueprint in the
+  repo root. Build: `pip install uv && uv sync --frozen --no-dev`; start:
+  `uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT`. Render was chosen over Vercel
+  because it's a plain long-running container — no ASGI adapter or serverless cold-start
+  handling needed for a stateful SQLAlchemy connection pool.
+- **Database**: Supabase Postgres (free tier), since Render's free plan has no persistent
+  disk and the app's default SQLite file would reset on every deploy/restart. Connected
+  through Supabase's **session pooler** endpoint (`*.pooler.supabase.com`), not the direct
+  `db.*.supabase.co` host — the direct host is IPv6-only now and didn't resolve from
+  either my machine or Render's build environment; the pooler works over IPv4.
+- **Driver**: added `psycopg[binary]` as a dependency and made `SANCTUM_DATABASE_URL` use
+  the `postgresql+psycopg://` scheme. `app/db.py`'s `connect_args={"check_same_thread": False}`
+  is SQLite-only, so it's now only passed when the URL scheme is `sqlite://` — passing it
+  to psycopg would raise. This is the one code change the SQLite→Postgres switch needed;
+  everything else (models, queries) was portable as-is.
+- The database URL itself is set as a Render environment variable (not in the repo).
+  `uv run pytest` still runs entirely against the default local SQLite file, so the "tests
+  must pass with no external services" rule holds.
 
 ## AI usage
 
-TODO — filling in with specifics once the session wraps up.
+I used Claude Code (Sonnet 5) throughout this assignment, both to scaffold each feature's
+implementation against SPEC.md and to walk through Postgres/Supabase/Render deployment
+step by step. Concretely:
+- Read ASSIGNMENT.md/SPEC.md and the existing partial code, then implemented each service
+  module (books, members, orders, loans, reports) one at a time, running the matching
+  test file after each change and committing per feature.
+- Used it to catch a real bug during implementation: the `tier_at_least` helper's strict
+  `>` comparison, which silently broke `master`-tier access to `master`-gated restricted
+  books — an easy one to miss by eye since the tests for `master` still passed most other
+  restricted-book cases.
+- One place it got something wrong and needed correcting: it initially tried the Supabase
+  **direct connection** hostname (`db.<ref>.supabase.co`), which failed DNS resolution
+  (`getaddrinfo failed`) because that host is IPv6-only on this network. I had to point it
+  at the session pooler hostname instead before the connection worked — worth knowing if
+  you hit the same error with Supabase.
+- I reviewed and understand every line committed; the check-order and all-or-nothing stock
+  logic in particular were verified by hand against SPEC.md's specified check sequence,
+  not just by the tests passing.
