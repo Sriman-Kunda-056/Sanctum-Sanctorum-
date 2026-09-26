@@ -160,6 +160,13 @@ All five areas from ASSIGNMENT.md are implemented and all 202 provided tests pas
   is SQLite-only, so it's now only passed when the URL scheme is `sqlite://` — passing it
   to psycopg would raise. This is the one code change the SQLite→Postgres switch needed;
   everything else (models, queries) was portable as-is.
+- **Checking that the deployment really uses Postgres.** If `SANCTUM_DATABASE_URL` is
+  missing in Render's Environment settings, the app silently falls back to SQLite on
+  Render's temporary disk, which is wiped on every deploy and idle restart. That is easy
+  to miss, because the seed data looks identical either way. The app now logs
+  `Using postgresql database` (or `sqlite`) at startup, visible in Render's logs. From
+  outside, a member's `created_at` that changes after a redeploy means the data is not
+  persistent.
 - The database URL itself is set as a Render environment variable (not in the repo).
   `uv run pytest` still runs entirely against the default local SQLite file, so the "tests
   must pass with no external services" rule holds.
