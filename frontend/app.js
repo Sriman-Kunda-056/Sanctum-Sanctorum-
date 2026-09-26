@@ -1400,6 +1400,7 @@ function initActions() {
       case 'save-book': saveBookEdit(id); break;
       case 'add-to-cart': addToCart(id); break;
       case 'borrow': borrowBook(id, target); break;
+      case 'loan-return': returnLoan(id, target); break;
       case 'cart-remove':
         state.cart = state.cart.filter((i) => i.book_id !== id);
         saveCart(); renderCart(); break;
