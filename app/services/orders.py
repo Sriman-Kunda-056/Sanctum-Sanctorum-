@@ -59,9 +59,8 @@ def create_order(db: Session, data: OrderCreate, now: datetime) -> Order:
         if item.book_id not in books:
             raise HTTPException(status_code=404, detail=f"Book {item.book_id} not found")
 
-    for item in data.items:
-        if books[item.book_id].restricted:
-            ensure_can_access_restricted(member)
+    if any(book.restricted for book in books.values()):
+        ensure_can_access_restricted(member)
 
     for item in data.items:
         book = books[item.book_id]
