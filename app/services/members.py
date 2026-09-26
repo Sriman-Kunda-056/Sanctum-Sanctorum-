@@ -53,9 +53,9 @@ def create_member(db: Session, data: MemberCreate, now: datetime) -> Member:
     return member
 
 
-def get_member(db: Session, member_id: int) -> Member:
-    """Return a member by id, or raise 404."""
-    member = db.get(Member, member_id)
+def get_member(db: Session, member_id: int, lock: bool = False) -> Member:
+    """Return a member by id, or raise 404. ``lock`` takes a row lock (``FOR UPDATE``)."""
+    member = db.get(Member, member_id, with_for_update=lock)
     if member is None:
         raise HTTPException(status_code=404, detail="Member not found")
     return member
