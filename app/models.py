@@ -101,7 +101,7 @@ class Loan(Base):
     book_id: Mapped[int] = mapped_column(ForeignKey("books.id"), index=True)
     borrowed_at: Mapped[datetime] = mapped_column(DateTime)
     due_at: Mapped[datetime] = mapped_column(DateTime)
-    returned_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, default=None)
+    returned_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     late_fee_cents: Mapped[int] = mapped_column(Integer, default=0)
 
     member: Mapped[Member] = relationship(back_populates="loans")

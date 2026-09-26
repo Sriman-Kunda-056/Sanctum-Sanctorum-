@@ -6,8 +6,9 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Book, Loan, MemberTier
+from app.models import Loan, MemberTier
 from app.schemas import LoanCreate, LoanOut, LoanStatus
+from app.services.books import get_book
 from app.services.members import ensure_can_access_restricted, get_member
 
 # Maximum concurrent unreturned loans per tier (None = unlimited).
@@ -47,8 +48,17 @@ def calculate_late_fee(due_at: datetime, returned_at: datetime, price_cents: int
     """25 cents per started day late (any partial day counts), capped at the book's price; 0 if not late."""
     if returned_at <= due_at:
         return 0
-    days_late = -(-(returned_at - due_at) // timedelta(days=1))
+    full_days, remainder = divmod(returned_at - due_at, timedelta(days=1))
+    days_late = full_days + (1 if remainder else 0)
     return min(days_late * LATE_FEE_PER_DAY_CENTS, price_cents)
+
+
+def _get_loan(db: Session, loan_id: int, lock: bool = False) -> Loan:
+    """Return the loan row by id, or raise 404. ``lock`` takes a row lock (``FOR UPDATE``)."""
+    loan = db.get(Loan, loan_id, with_for_update=lock)
+    if loan is None:
+        raise HTTPException(status_code=404, detail="Loan not found")
+    return loan
 
 
 def create_loan(db: Session, data: LoanCreate, now: datetime) -> LoanOut:
@@ -67,9 +77,7 @@ def create_loan(db: Session, data: LoanCreate, now: datetime) -> LoanOut:
     # Locking the member serializes their concurrent borrows (limit / duplicate checks); locking
     # the book protects its stock counter. Both are held until commit or rollback.
     member = get_member(db, data.member_id, lock=True)
-    book = db.get(Book, data.book_id, with_for_update=True)
-    if book is None:
-        raise HTTPException(status_code=404, detail="Book not found")
+    book = get_book(db, data.book_id, lock=True)
 
     if book.restricted:
         ensure_can_access_restricted(member)
@@ -90,14 +98,7 @@ def create_loan(db: Session, data: LoanCreate, now: datetime) -> LoanOut:
     if book.stock == 0:
         raise HTTPException(status_code=409, detail="Book is out of stock")
 
-    loan = Loan(
-        member_id=member.id,
-        book_id=book.id,
-        borrowed_at=now,
-        due_at=now + LOAN_PERIOD,
-        returned_at=None,
-        late_fee_cents=0,
-    )
+    loan = Loan(member_id=member.id, book_id=book.id, borrowed_at=now, due_at=now + LOAN_PERIOD)
     book.stock -= 1
     db.add(loan)
     db.commit()
@@ -107,10 +108,7 @@ def create_loan(db: Session, data: LoanCreate, now: datetime) -> LoanOut:
 
 def get_loan(db: Session, loan_id: int, now: datetime) -> LoanOut:
     """Return a loan by id, or raise 404."""
-    loan = db.get(Loan, loan_id)
-    if loan is None:
-        raise HTTPException(status_code=404, detail="Loan not found")
-    return to_loan_out(loan, now)
+    return to_loan_out(_get_loan(db, loan_id), now)
 
 
 def return_loan(db: Session, loan_id: int, now: datetime) -> LoanOut:
@@ -119,13 +117,11 @@ def return_loan(db: Session, loan_id: int, now: datetime) -> LoanOut:
     Rules: 404 if missing; 409 if already returned. Sets returned_at = now, restores one copy
     of stock and charges a late fee (see ``calculate_late_fee``).
     """
-    loan = db.get(Loan, loan_id, with_for_update=True)
-    if loan is None:
-        raise HTTPException(status_code=404, detail="Loan not found")
+    loan = _get_loan(db, loan_id, lock=True)
     if loan.returned_at is not None:
         raise HTTPException(status_code=409, detail="Loan already returned")
 
-    book = db.get(Book, loan.book_id, with_for_update=True)
+    book = get_book(db, loan.book_id, lock=True)
     loan.returned_at = now
     loan.late_fee_cents = calculate_late_fee(loan.due_at, now, book.price_cents)
     book.stock += 1
